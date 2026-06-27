@@ -3,3 +3,4 @@ google-generativeai
 Flask
 gunicorn
 duckduckgo-search
+gunicorn
