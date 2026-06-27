@@ -52,7 +52,7 @@ def search_tool(query: str) -> str:
             return str([r for r in ddgs.text(query, max_results=3)])
     except: return "Search failed."
 
-def get_ai_response(chat_id, user_id, prompt, image=None, voice_input=None):
+def get_ai_response(chat_id, user_id, prompt, image=None):
     keys = list(GEMINI_KEYS)
     random.shuffle(keys)
     for key in keys:
@@ -66,7 +66,6 @@ def get_ai_response(chat_id, user_id, prompt, image=None, voice_input=None):
             chat = model.start_chat(enable_automatic_function_calling=True)
             content = [f"{instr}\n\nContext:\n" + "\n".join(list(chat_memories[chat_id])) + f"\n\nUser: {prompt}"]
             if image: content.append(image)
-            if voice_input: content.append(voice_input) # Gemini can handle audio bytes directly if configured, but here we pass transcribed text or handle as multimodality
                 
             response = chat.send_message(content)
             chat_memories[chat_id].append(f"User: {prompt}")
@@ -77,30 +76,21 @@ def get_ai_response(chat_id, user_id, prompt, image=None, voice_input=None):
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 
-@bot.message_handler(content_types=['voice'])
-def handle_voice(message):
+def send_voice_response(chat_id, text, reply_to_id=None):
     try:
-        bot.send_chat_action(message.chat.id, 'record_audio')
-        file_info = bot.get_file(message.voice.file_id)
-        # For simplicity in free tier, we use Gemini's ability to understand audio if we send it, 
-        # but here we'll use a trick: ask Gemini to describe the audio we'll "describe" as text 
-        # or use a proper speech-to-text if available.
-        # Better: Send the audio file to Gemini directly.
-        downloaded_file = bot.download_file(file_info.file_path)
-        
-        # We'll treat this as a prompt to Gemini to understand the voice (Gemini Flash supports audio)
-        # Note: In a real environment, you'd upload to Google Cloud Storage or pass bytes.
-        # For now, let's use the text prompt "The user sent a voice message, please respond."
-        response_text = get_ai_response(message.chat.id, message.from_user.id, "User sent a voice message. Please respond based on the conversation.")
-        
-        # Convert response to speech
-        tts = gTTS(text=response_text, lang='my')
+        tts = gTTS(text=text, lang='my', slow=False) # slow=False for faster speech
         voice_io = io.BytesIO()
         tts.write_to_fp(voice_io)
         voice_io.seek(0)
-        bot.send_voice(message.chat.id, voice_io, reply_to_message_id=message.message_id)
+        bot.send_voice(chat_id, voice_io, reply_to_message_id=reply_to_id)
     except Exception as e:
-        logger.error(f"Voice Error: {e}")
+        logger.error(f"TTS Error: {e}")
+
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    bot.send_chat_action(message.chat.id, 'record_audio')
+    response_text = get_ai_response(message.chat.id, message.from_user.id, "User sent a voice message. Please respond.")
+    send_voice_response(message.chat.id, response_text, message.message_id)
 
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_all(message):
@@ -116,19 +106,16 @@ def handle_all(message):
         
         response = get_ai_response(message.chat.id, message.from_user.id, prompt or "Describe this image", img)
         
-        # If it's a private chat with Boss, reply with voice too
-        if message.chat.type == 'private' and message.from_user.id == BOSS_ID:
-            try:
-                tts = gTTS(text=response, lang='my')
-                voice_io = io.BytesIO()
-                tts.write_to_fp(voice_io)
-                voice_io.seek(0)
-                bot.send_voice(message.chat.id, voice_io)
-            except: pass
+        # Voice Command Logic
+        voice_keywords = ["အသံနဲ့ဖြေ", "စကားပြော", "voice", "audio", "ပြောပြပါ"]
+        should_voice = any(kw in text.lower() for kw in voice_keywords)
         
-        bot.reply_to(message, response, parse_mode='Markdown')
+        if should_voice:
+            send_voice_response(message.chat.id, response, message.message_id)
+        else:
+            bot.reply_to(message, response, parse_mode='Markdown')
 
-# Admin handlers (Simplified for space)
+# Admin handlers
 @bot.message_handler(commands=['kick', 'ban', 'mute', 'unmute', 'warn', 'purge'])
 def admin_cmds(message):
     if message.from_user.id != BOSS_ID and bot.get_chat_member(message.chat.id, message.from_user.id).status not in ['creator', 'administrator']: return
@@ -148,7 +135,7 @@ def admin_cmds(message):
 
 app = Flask(__name__)
 @app.route('/')
-def index(): return 'Voice AI Bot is Active!'
+def index(): return 'Smart Voice AI Bot is Active!'
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
