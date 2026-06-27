@@ -22,51 +22,112 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6LrYDk7IdMQkSy3FeSF47
 genai.configure(api_key=GEMINI_API_KEY)
 
 def search_tool(query: str) -> str:
-    """Searches the web using DuckDuckGo."""
+    """Searches the web using DuckDuckGo and returns the results."""
     try:
+        logger.info(f"Searching for: {query}")
         with DDGS() as ddgs:
             results = [r for r in ddgs.text(query, max_results=3)]
             return str(results)
     except Exception as e:
+        logger.error(f"Search error: {e}")
         return f"Search error: {e}"
 
-# model = genai.GenerativeModel('gemini-flash-latest', tools=[search_tool])
-# Note: Temporarily disabling complex tools to ensure basic chat works first
-model = genai.GenerativeModel('gemini-flash-latest')
+# Initialize Model with tools
+model = genai.GenerativeModel(
+    model_name='gemini-flash-latest',
+    tools=[search_tool]
+)
 
 # Initialize Telegram Bot
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 
-# System Prompt
-SYSTEM_PROMPT = "You are an AI Admin. Reply in Burmese/natural language. Be helpful."
+# Advanced System Prompt
+SYSTEM_PROMPT = """
+You are an advanced AI Agent and the official Administrator of this Telegram group. 
+Your persona is highly intelligent, professional, and unconditionally obedient to admin commands.
+
+Core Responsibilities:
+1. Group Moderation: Maintain safety.
+2. Intelligent Assistant: Answer accurately using the search tool when needed.
+3. Language: Always reply in the user's language (e.g., natural Burmese).
+"""
 
 def get_ai_response(prompt):
     try:
-        response = model.generate_content(SYSTEM_PROMPT + "\n\nUser: " + prompt)
+        # Enable automatic function calling for agent behavior
+        chat = model.start_chat(enable_automatic_function_calling=True)
+        response = chat.send_message(SYSTEM_PROMPT + "\n\nUser: " + prompt)
         return response.text
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
-        return "AI error occurred."
+        return "Sorry, I'm having trouble thinking right now."
 
 # --- Handlers ---
 
 @bot.message_handler(commands=['start', 'help', 'status'])
-def handle_commands(message):
+def handle_info_commands(message):
     if 'status' in message.text:
-        bot.reply_to(message, "✅ Bot is online!")
+        bot.reply_to(message, "✅ Bot is online and AI Agent is active!")
     else:
-        bot.reply_to(message, "👋 I am your AI Admin Bot.")
+        help_text = (
+            "👋 I am your AI Admin Agent.\n\n"
+            "Admin Commands:\n"
+            "/kick, /ban, /mute, /unmute, /warn, /purge\n\n"
+            "Chat with me by mentioning me or replying to my message!"
+        )
+        bot.reply_to(message, help_text)
+
+@bot.message_handler(commands=['kick', 'ban', 'mute', 'unmute', 'warn', 'purge'])
+def handle_admin_commands(message):
+    if bot.get_chat_member(message.chat.id, message.from_user.id).status not in ['creator', 'administrator']:
+        bot.reply_to(message, "❌ You don't have permission.")
+        return
+    
+    cmd = message.text.split()[0][1:]
+    if not message.reply_to_message and cmd != 'purge':
+        bot.reply_to(message, "Please reply to a user's message to use this command.")
+        return
+
+    try:
+        target_id = message.reply_to_message.from_user.id if message.reply_to_message else None
+        if cmd == 'kick':
+            bot.kick_chat_member(message.chat.id, target_id)
+            bot.reply_to(message, "👢 User kicked.")
+        elif cmd == 'ban':
+            bot.ban_chat_member(message.chat.id, target_id)
+            bot.reply_to(message, "🚫 User banned.")
+        elif cmd == 'mute':
+            bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=False)
+            bot.reply_to(message, "🔇 User muted.")
+        elif cmd == 'unmute':
+            bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True)
+            bot.reply_to(message, "🔊 User unmuted.")
+        elif cmd == 'warn':
+            bot.reply_to(message.reply_to_message, "⚠️ You have been warned by an Admin!")
+        elif cmd == 'purge':
+            if message.reply_to_message:
+                for i in range(message.reply_to_message.message_id, message.message_id + 1):
+                    try: bot.delete_message(message.chat.id, i)
+                    except: pass
+                bot.send_message(message.chat.id, "🧹 Messages purged.")
+    except Exception as e:
+        bot.reply_to(message, f"Admin Error: {e}")
 
 @bot.message_handler(func=lambda message: True)
-def handle_all(message):
+def handle_all_messages(message):
     bot_info = bot.get_me()
-    if message.chat.type == 'private' or f"@{bot_info.username}" in (message.text or "") or (message.reply_to_message and message.reply_to_message.from_user.id == bot_info.id):
+    is_private = message.chat.type == 'private'
+    is_mentioned = f"@{bot_info.username}" in (message.text or "")
+    is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.id == bot_info.id
+    
+    if is_private or is_mentioned or is_reply_to_bot:
         text = (message.text or "").replace(f"@{bot_info.username}", "").strip()
         if text:
             bot.send_chat_action(message.chat.id, 'typing')
             response = get_ai_response(text)
-            bot.reply_to(message, response)
+            bot.reply_to(message, response, parse_mode='Markdown')
 
+# Flask app
 app = Flask(__name__)
 
 @app.route('/')
