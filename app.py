@@ -28,7 +28,6 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 # Gemini Keys Handling with extra cleaning
 raw_keys = os.environ.get("GEMINI_KEYS", "")
-# Split by comma, then strip spaces AND quotes
 GEMINI_KEYS = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
 
 logger.info(f"DEBUG: Found {len(GEMINI_KEYS)} Gemini keys.")
@@ -119,7 +118,10 @@ def handle_all(message):
             if should_voice:
                 send_voice_response(message.chat.id, response, message.message_id)
             else:
-                bot.reply_to(message, response, parse_mode='Markdown')
+                try:
+                    bot.reply_to(message, response, parse_mode='Markdown')
+                except:
+                    bot.reply_to(message, response)
     except Exception as e:
         logger.error(f"Bot Handle Error: {e}")
 
