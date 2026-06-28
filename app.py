@@ -55,7 +55,7 @@ def get_ai_response(chat_id, user_id, prompt, image=None):
     for key in keys:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3.5-flash', tools=[search_tool])
+            model = genai.GenerativeModel('gemini-2.5-flash', tools=[search_tool])
             
             is_boss = (user_id == BOSS_ID)
             instr = "You are speaking to your BOSS. Be extremely obedient." if is_boss else "You are an AI Admin. Be helpful."
