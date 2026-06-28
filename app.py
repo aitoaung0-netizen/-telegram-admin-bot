@@ -26,8 +26,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "7778399973:AAEH2BU6hBHUqseWfd
 BOSS_ID = 6780671216
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# Gemini Keys Handling with extra cleaning
-raw_keys = os.environ.get("GEMINI_KEYS", "")
+# Gemini Keys Handling (Support both GEMINI_KEYS and GEMINI_API_KEYS)
+raw_keys = os.environ.get("GEMINI_KEYS") or os.environ.get("GEMINI_API_KEYS") or ""
 GEMINI_KEYS = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
 
 logger.info(f"DEBUG: Found {len(GEMINI_KEYS)} Gemini keys.")
@@ -46,7 +46,7 @@ def search_tool(query: str) -> str:
 
 def get_ai_response(chat_id, user_id, prompt, image=None):
     if not GEMINI_KEYS:
-        return "Boss ရေ... Render ရဲ့ Environment Variables မှာ GEMINI_KEYS ထည့်ဖို့ လိုအပ်နေပါတယ်ခင်ဗျာ။"
+        return "Boss ရေ... Render ရဲ့ Environment Variables မှာ GEMINI_KEYS ဒါမှမဟုတ် GEMINI_API_KEYS ထည့်ဖို့ လိုအပ်နေပါတယ်ခင်ဗျာ။"
         
     keys = list(GEMINI_KEYS)
     random.shuffle(keys)
