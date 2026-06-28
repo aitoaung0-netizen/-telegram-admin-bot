@@ -6,11 +6,9 @@ import sys
 import io
 import collections
 import random
-import time
+import re
 from flask import Flask, request
-from duckduckgo_search import DDGS
 from PIL import Image
-from gtts import gTTS
 from datetime import datetime, timedelta, timezone
 
 # Logging setup
@@ -26,11 +24,9 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "7778399973:AAEH2BU6hBHUqseWfd
 BOSS_ID = 6780671216
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# Gemini Keys Handling (Support both GEMINI_KEYS and GEMINI_API_KEYS)
+# Gemini Keys Handling
 raw_keys = os.environ.get("GEMINI_KEYS") or os.environ.get("GEMINI_API_KEYS") or ""
 GEMINI_KEYS = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
-
-logger.info(f"DEBUG: Found {len(GEMINI_KEYS)} Gemini keys.")
 
 chat_memories = collections.defaultdict(lambda: collections.deque(maxlen=10))
 
@@ -38,15 +34,25 @@ def get_myanmar_time():
     mm_tz = timezone(timedelta(hours=6, minutes=30))
     return datetime.now(mm_tz).strftime("%Y-%m-%d %I:%M:%S %p")
 
-def search_tool(query: str) -> str:
+def is_math_expression(text):
+    # Basic math pattern: numbers and operators (+, -, *, /, (, ), .)
+    pattern = r'^[\d\s\+\-\*\/\(\)\.]+$'
+    if re.match(pattern, text) and any(op in text for op in '+-*/'):
+        return True
+    return False
+
+def calculate(expression):
     try:
-        with DDGS() as ddgs:
-            return str([r for r in ddgs.text(query, max_results=3)])
-    except: return "Search failed."
+        # Clean and evaluate safely
+        clean_expr = re.sub(r'[^\d\+\-\*\/\(\)\.]', '', expression)
+        result = eval(clean_expr, {"__builtins__": None}, {})
+        return f"🔢 Result: {result}"
+    except:
+        return None
 
 def get_ai_response(chat_id, user_id, prompt, image=None):
     if not GEMINI_KEYS:
-        return "Boss ရေ... Render ရဲ့ Environment Variables မှာ GEMINI_KEYS ဒါမှမဟုတ် GEMINI_API_KEYS ထည့်ဖို့ လိုအပ်နေပါတယ်ခင်ဗျာ။"
+        return "Gemini API Key လိုအပ်နေပါတယ်ခင်ဗျာ။"
         
     keys = list(GEMINI_KEYS)
     random.shuffle(keys)
@@ -55,14 +61,19 @@ def get_ai_response(chat_id, user_id, prompt, image=None):
     for key in keys:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-2.5-flash', tools=[search_tool])
+            model = genai.GenerativeModel('gemini-2.5-flash')
             
             is_boss = (user_id == BOSS_ID)
-            instr = "You are speaking to your BOSS. Be extremely obedient." if is_boss else "You are an AI Admin. Be helpful."
-            instr += f" Always reply in natural Burmese. The current Myanmar time is {current_time}."
+            instr = "You are a Security Admin AI. Be professional and helpful."
+            if is_boss: instr = "You are speaking to your BOSS. Be extremely obedient."
             
-            chat = model.start_chat(enable_automatic_function_calling=True)
-            content = [f"{instr}\n\nContext:\n" + "\n".join(list(chat_memories[chat_id])) + f"\n\nUser: {prompt}"]
+            instr += f" Reply in natural Burmese. Current Myanmar time: {current_time}. No web search."
+            
+            chat = model.start_chat()
+            history = "\n".join(list(chat_memories[chat_id]))
+            full_prompt = f"{instr}\n\nContext:\n{history}\n\nUser: {prompt}"
+            
+            content = [full_prompt]
             if image: content.append(image)
                 
             response = chat.send_message(content)
@@ -70,84 +81,97 @@ def get_ai_response(chat_id, user_id, prompt, image=None):
             chat_memories[chat_id].append(f"AI: {response.text}")
             return response.text
         except Exception as e:
-            logger.error(f"Gemini Key Error with key {key[:10]}...: {str(e)}")
+            if "429" in str(e) or "quota" in str(e).lower():
+                continue
+            logger.error(f"Gemini Error: {e}")
             continue
-    return "အဆင်မပြေဖြစ်နေပါတယ် Boss။ Key အားလုံး Quota ပြည့်နေတာ ဒါမှမဟုတ် ပိတ်ခံထားရပုံရပါတယ်။ Render Logs ကို စစ်ဆေးပေးပါဦး။"
+    return "Quota ပြည့်သွားလို့ ခဏစောင့်ပေးပါဦးခင်ဗျာ။"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 
-def send_voice_response(chat_id, text, reply_to_id=None):
+def is_admin(chat_id, user_id):
+    if user_id == BOSS_ID: return True
     try:
-        tts = gTTS(text=text, lang='my', slow=False)
-        voice_io = io.BytesIO()
-        tts.write_to_fp(voice_io)
-        voice_io.seek(0)
-        bot.send_voice(chat_id, voice_io, reply_to_message_id=reply_to_id)
-    except Exception as e:
-        logger.error(f"TTS Error: {e}")
+        member = bot.get_chat_member(chat_id, user_id)
+        return member.status in ['creator', 'administrator']
+    except: return False
 
-@bot.message_handler(content_types=['voice'])
-def handle_voice(message):
-    bot.send_chat_action(message.chat.id, 'record_audio')
-    response_text = get_ai_response(message.chat.id, message.from_user.id, "User sent a voice message. Please respond.")
-    send_voice_response(message.chat.id, response_text, message.message_id)
-
-@bot.message_handler(content_types=['photo', 'text'])
-def handle_all(message):
-    try:
-        bot_info = bot.get_me()
-        text = message.text or message.caption or ""
-        
-        is_private = message.chat.type == 'private'
-        is_mentioned = f"@{bot_info.username}" in text
-        is_reply_to_bot = (message.reply_to_message and message.reply_to_message.from_user.id == bot_info.id)
-        
-        if is_private or is_mentioned or is_reply_to_bot:
-            prompt = text.replace(f"@{bot_info.username}", "").strip()
-            bot.send_chat_action(message.chat.id, 'typing')
-            img = None
-            if message.photo:
-                file_info = bot.get_file(message.photo[-1].file_id)
-                img = Image.open(io.BytesIO(bot.download_file(file_info.file_path)))
-            
-            response = get_ai_response(message.chat.id, message.from_user.id, prompt or "Describe this image", img)
-            
-            voice_keywords = ["အသံနဲ့ဖြေ", "စကားပြော", "voice", "audio", "ပြောပြပါ"]
-            should_voice = any(kw in text.lower() for kw in voice_keywords)
-            
-            if should_voice:
-                send_voice_response(message.chat.id, response, message.message_id)
-            else:
-                try:
-                    bot.reply_to(message, response, parse_mode='Markdown')
-                except:
-                    bot.reply_to(message, response)
-    except Exception as e:
-        logger.error(f"Bot Handle Error: {e}")
-
-# Admin handlers
+# Admin commands
 @bot.message_handler(commands=['kick', 'ban', 'mute', 'unmute', 'warn', 'purge'])
-def admin_cmds(message):
-    if message.from_user.id != BOSS_ID and bot.get_chat_member(message.chat.id, message.from_user.id).status not in ['creator', 'administrator']: return
-    cmd = message.text.split()[0][1:]
+def admin_handler(message):
+    if not is_admin(message.chat.id, message.from_user.id):
+        bot.reply_to(message, "❌ ဒီ Command ကို Admin တွေပဲ သုံးလို့ရပါတယ်။")
+        return
+
+    cmd = message.text.split()[0][1:].lower()
+    target = message.reply_to_message
+    
     try:
-        target = message.reply_to_message.from_user.id if message.reply_to_message else None
-        if cmd == 'kick' and target: bot.kick_chat_member(message.chat.id, target)
-        elif cmd == 'ban' and target: bot.ban_chat_member(message.chat.id, target)
-        elif cmd == 'mute' and target: bot.restrict_chat_member(message.chat.id, target, can_send_messages=False)
-        elif cmd == 'unmute' and target: bot.restrict_chat_member(message.chat.id, target, can_send_messages=True)
-        elif cmd == 'purge' and message.reply_to_message:
-            for i in range(message.reply_to_message.message_id, message.message_id + 1):
+        if cmd == 'purge' and target:
+            for i in range(target.message_id, message.message_id + 1):
                 try: bot.delete_message(message.chat.id, i)
                 except: pass
-        bot.reply_to(message, "✅ Done!")
-    except: pass
+            return
+
+        if not target:
+            bot.reply_to(message, "❌ ဒီ Command ကို အသုံးပြုဖို့ လူတစ်ယောက်ရဲ့ စာကို Reply ပြန်ပေးပါ။")
+            return
+
+        target_id = target.from_user.id
+        if cmd == 'kick':
+            bot.kick_chat_member(message.chat.id, target_id)
+            bot.unban_chat_member(message.chat.id, target_id) # Kick means remove but allow back
+            bot.reply_to(message, f"✅ {target.from_user.first_name} ကို Group ထဲက ထုတ်လိုက်ပါပြီ။")
+        elif cmd == 'ban':
+            bot.ban_chat_member(message.chat.id, target_id)
+            bot.reply_to(message, f"🚫 {target.from_user.first_name} ကို Ban လိုက်ပါပြီ။")
+        elif cmd == 'mute':
+            bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=False)
+            bot.reply_to(message, f"🔇 {target.from_user.first_name} ကို Mute လိုက်ပါပြီ။")
+        elif cmd == 'unmute':
+            bot.restrict_chat_member(message.chat.id, target_id, can_send_messages=True)
+            bot.reply_to(message, f"🔊 {target.from_user.first_name} အတွက် Mute ဖွင့်ပေးလိုက်ပါပြီ။")
+        elif cmd == 'warn':
+            bot.reply_to(target, "⚠️ သတိပေးစာ - စည်းကမ်းလိုက်နာပါ။ နောက်တစ်ကြိမ်ဆိုရင် အရေးယူခံရပါမယ်။")
+    except Exception as e:
+        bot.reply_to(message, f"❌ အမှားတစ်ခု ဖြစ်သွားပါတယ်- {str(e)}")
+
+@bot.message_handler(content_types=['text', 'photo'])
+def handle_messages(message):
+    text = message.text or message.caption or ""
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
+    # 1. Check for Math (Calculator)
+    if is_math_expression(text):
+        result = calculate(text)
+        if result:
+            bot.reply_to(message, result)
+            return
+
+    # 2. Check for AI Interaction
+    bot_info = bot.get_me()
+    is_private = message.chat.type == 'private'
+    is_mentioned = f"@{bot_info.username}" in text
+    is_reply_to_bot = (message.reply_to_message and message.reply_to_message.from_user.id == bot_info.id)
+    
+    if is_private or is_mentioned or is_reply_to_bot:
+        prompt = text.replace(f"@{bot_info.username}", "").strip()
+        bot.send_chat_action(chat_id, 'typing')
+        
+        img = None
+        if message.photo:
+            file_info = bot.get_file(message.photo[-1].file_id)
+            img = Image.open(io.BytesIO(bot.download_file(file_info.file_path)))
+            
+        response = get_ai_response(chat_id, user_id, prompt or "ဒီပုံလေးကို ရှင်းပြပေးပါ", img)
+        bot.reply_to(message, response)
 
 app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return 'Smart Voice AI Bot is Active and Healthy!', 200
+    return 'Security Admin Bot is Active!', 200
 
 @app.route('/' + TELEGRAM_TOKEN, methods=['POST'])
 def webhook():
@@ -159,15 +183,11 @@ def webhook():
     return 'Error', 403
 
 if __name__ == '__main__':
-    # Webhook ကို အော်တို ချိတ်ဆက်ခြင်း
     if RENDER_URL:
         webhook_url = f"{RENDER_URL}/{TELEGRAM_TOKEN}"
         bot.remove_webhook()
-        time.sleep(1)
         bot.set_webhook(url=webhook_url)
         logger.info(f"Webhook set to: {webhook_url}")
-    else:
-        logger.warning("RENDER_EXTERNAL_URL not found. Webhook not set automatically.")
-
+    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
