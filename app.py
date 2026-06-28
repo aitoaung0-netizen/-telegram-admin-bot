@@ -28,6 +28,9 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 raw_keys = os.environ.get("GEMINI_KEYS") or os.environ.get("GEMINI_API_KEYS") or ""
 GEMINI_KEYS = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
 
+logger.info(f"--- SYSTEM STARTUP ---")
+logger.info(f"Detected {len(GEMINI_KEYS)} Gemini Keys in environment.")
+
 chat_memories = collections.defaultdict(lambda: collections.deque(maxlen=10))
 
 def get_myanmar_time():
@@ -52,7 +55,7 @@ def calculate(expression):
 
 def get_ai_response(chat_id, user_id, prompt, image=None):
     if not GEMINI_KEYS:
-        return "Gemini API Key လိုအပ်နေပါတယ်ခင်ဗျာ။"
+        return "Gemini API Key မတွေ့ရှိပါ။ Render Environment Variables မှာ GEMINI_KEYS ကို စစ်ဆေးပေးပါ။"
         
     keys = list(GEMINI_KEYS)
     random.shuffle(keys)
@@ -81,11 +84,17 @@ def get_ai_response(chat_id, user_id, prompt, image=None):
             chat_memories[chat_id].append(f"AI: {response.text}")
             return response.text
         except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
+            err_msg = str(e).lower()
+            if "429" in err_msg or "quota" in err_msg:
+                logger.warning(f"Key {key[:8]}... Quota Exceeded. Trying next key.")
                 continue
-            logger.error(f"Gemini Error: {e}")
-            continue
-    return "Quota ပြည့်သွားလို့ ခဏစောင့်ပေးပါဦးခင်ဗျာ။"
+            elif "400" in err_msg or "invalid" in err_msg:
+                logger.error(f"Key {key[:8]}... is Invalid. Check your keys.")
+                continue
+            else:
+                logger.error(f"Gemini Error with key {key[:8]}...: {e}")
+                continue
+    return "အခုလောလောဆယ် Key အားလုံး Quota ပြည့်နေပါတယ်။ ခဏကြာမှ ပြန်စမ်းကြည့်ပေးပါဦးခင်ဗျာ။"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 
@@ -96,7 +105,6 @@ def is_admin(chat_id, user_id):
         return member.status in ['creator', 'administrator']
     except: return False
 
-# Admin commands
 @bot.message_handler(commands=['kick', 'ban', 'mute', 'unmute', 'warn', 'purge'])
 def admin_handler(message):
     if not is_admin(message.chat.id, message.from_user.id):
@@ -120,7 +128,7 @@ def admin_handler(message):
         target_id = target.from_user.id
         if cmd == 'kick':
             bot.kick_chat_member(message.chat.id, target_id)
-            bot.unban_chat_member(message.chat.id, target_id) # Kick means remove but allow back
+            bot.unban_chat_member(message.chat.id, target_id)
             bot.reply_to(message, f"✅ {target.from_user.first_name} ကို Group ထဲက ထုတ်လိုက်ပါပြီ။")
         elif cmd == 'ban':
             bot.ban_chat_member(message.chat.id, target_id)
@@ -142,14 +150,12 @@ def handle_messages(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
     
-    # 1. Check for Math (Calculator)
     if is_math_expression(text):
         result = calculate(text)
         if result:
             bot.reply_to(message, result)
             return
 
-    # 2. Check for AI Interaction
     bot_info = bot.get_me()
     is_private = message.chat.type == 'private'
     is_mentioned = f"@{bot_info.username}" in text
