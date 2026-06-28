@@ -22,18 +22,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-# Render Dashboard > Environment Variables မှာ အောက်ပါတို့ကို ထည့်ပေးပါ:
-# 1. TELEGRAM_TOKEN
-# 2. GEMINI_KEYS (ကော်မာခံ၍)
-# 3. RENDER_EXTERNAL_URL (Render က အော်တိုပေးပါတယ်၊ မရှိရင် Boss ရဲ့ https://... URL ကို ထည့်ပါ)
-
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "7778399973:AAEH2BU6hBHUqseWfdw2kNcX_OFZNYoFoes")
 BOSS_ID = 6780671216
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
-# Render မှ Key များကို ဆွဲယူခြင်း
+# Gemini Keys Handling with extra cleaning
 raw_keys = os.environ.get("GEMINI_KEYS", "")
-GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+# Split by comma, then strip spaces AND quotes
+GEMINI_KEYS = [k.strip().strip("'").strip('"') for k in raw_keys.split(",") if k.strip()]
+
+logger.info(f"DEBUG: Found {len(GEMINI_KEYS)} Gemini keys.")
 
 chat_memories = collections.defaultdict(lambda: collections.deque(maxlen=10))
 
@@ -73,9 +71,9 @@ def get_ai_response(chat_id, user_id, prompt, image=None):
             chat_memories[chat_id].append(f"AI: {response.text}")
             return response.text
         except Exception as e:
-            logger.error(f"Gemini Key Error: {str(e)[:100]}")
+            logger.error(f"Gemini Key Error with key {key[:10]}...: {str(e)}")
             continue
-    return "အဆင်မပြေဖြစ်နေပါတယ် Boss။ Key အားလုံး Quota ပြည့်နေတာ ဒါမှမဟုတ် ပိတ်ခံထားရပုံရပါတယ်။"
+    return "အဆင်မပြေဖြစ်နေပါတယ် Boss။ Key အားလုံး Quota ပြည့်နေတာ ဒါမှမဟုတ် ပိတ်ခံထားရပုံရပါတယ်။ Render Logs ကို စစ်ဆေးပေးပါဦး။"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=False)
 
@@ -97,30 +95,33 @@ def handle_voice(message):
 
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_all(message):
-    bot_info = bot.get_me()
-    text = message.text or message.caption or ""
-    
-    is_private = message.chat.type == 'private'
-    is_mentioned = f"@{bot_info.username}" in text
-    is_reply_to_bot = (message.reply_to_message and message.reply_to_message.from_user.id == bot_info.id)
-    
-    if is_private or is_mentioned or is_reply_to_bot:
-        prompt = text.replace(f"@{bot_info.username}", "").strip()
-        bot.send_chat_action(message.chat.id, 'typing')
-        img = None
-        if message.photo:
-            file_info = bot.get_file(message.photo[-1].file_id)
-            img = Image.open(io.BytesIO(bot.download_file(file_info.file_path)))
+    try:
+        bot_info = bot.get_me()
+        text = message.text or message.caption or ""
         
-        response = get_ai_response(message.chat.id, message.from_user.id, prompt or "Describe this image", img)
+        is_private = message.chat.type == 'private'
+        is_mentioned = f"@{bot_info.username}" in text
+        is_reply_to_bot = (message.reply_to_message and message.reply_to_message.from_user.id == bot_info.id)
         
-        voice_keywords = ["အသံနဲ့ဖြေ", "စကားပြော", "voice", "audio", "ပြောပြပါ"]
-        should_voice = any(kw in text.lower() for kw in voice_keywords)
-        
-        if should_voice:
-            send_voice_response(message.chat.id, response, message.message_id)
-        else:
-            bot.reply_to(message, response, parse_mode='Markdown')
+        if is_private or is_mentioned or is_reply_to_bot:
+            prompt = text.replace(f"@{bot_info.username}", "").strip()
+            bot.send_chat_action(message.chat.id, 'typing')
+            img = None
+            if message.photo:
+                file_info = bot.get_file(message.photo[-1].file_id)
+                img = Image.open(io.BytesIO(bot.download_file(file_info.file_path)))
+            
+            response = get_ai_response(message.chat.id, message.from_user.id, prompt or "Describe this image", img)
+            
+            voice_keywords = ["အသံနဲ့ဖြေ", "စကားပြော", "voice", "audio", "ပြောပြပါ"]
+            should_voice = any(kw in text.lower() for kw in voice_keywords)
+            
+            if should_voice:
+                send_voice_response(message.chat.id, response, message.message_id)
+            else:
+                bot.reply_to(message, response, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Bot Handle Error: {e}")
 
 # Admin handlers
 @bot.message_handler(commands=['kick', 'ban', 'mute', 'unmute', 'warn', 'purge'])
